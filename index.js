@@ -78,8 +78,8 @@ function createAgent(proxy) {
 }
 
 const AI_ENDPOINTS = {
-    "https://deployment-uu9y1z4z85rapgwkss1muuiz.stag-vxzy.zettablock.com/main": {
-        "agent_id": "deployment_UU9y1Z4Z85RAPGwkss1mUUiZ",
+    "https://deployment-vxjkb0yqft5vlwzu7okkwa8l.stag-vxzy.zettablock.com/main": {
+        "agent_id": "deployment-vxjkb0yqft5vlwzu7okkwa8l",
         "name": "Kite AI Assistant",
         "questions": [
             "Tell me about the latest updates in Kite AI",
@@ -94,8 +94,8 @@ const AI_ENDPOINTS = {
             "How can I optimize my use of Kite AI?"
         ]
     },
-    "https://deployment-ecz5o55dh0dbqagkut47kzyc.stag-vxzy.zettablock.com/main": {
-        "agent_id": "deployment_ECz5O55dH0dBQaGKuT47kzYC",
+    "https://deployment-fsegykivcls3m9nrpe9zguy9.stag-vxzy.zettablock.com/main": {
+        "agent_id": "deployment-fsegykivcls3m9nrpe9zguy9",
         "name": "Crypto Price Assistant",
         "questions": [
             "What's the current market sentiment for Solana?",
@@ -110,10 +110,12 @@ const AI_ENDPOINTS = {
             "Cardano's market outlook"
         ]
     },
-    "https://deployment-sofftlsf9z4fya3qchykaanq.stag-vxzy.zettablock.com/main": {
-        "agent_id": "deployment_SoFftlsf9z4fyA3QCHYkaANq",
+    "https://deployment-vzbfwrddjthxis3sfplnhx6k.stag-vxzy.zettablock.com/main": {
+        "agent_id": "deployment-vzbfwrddjthxis3sfplnhx6k",
         "name": "Transaction Analyzer",
-        "questions": []
+        "questions": [
+            "What is my current transaction"
+        ]
     }
 };
 
@@ -135,7 +137,7 @@ class WalletSession {
     constructor(walletAddress, sessionId) {
         this.walletAddress = walletAddress;
         this.sessionId = sessionId;
-        this.dailyPoints = 0;
+        this.dailyPoints = 10;
         this.startTime = new Date();
         this.nextResetTime = new Date(this.startTime.getTime() + 24 * 60 * 60 * 1000);
         this.statistics = new WalletStatistics();
@@ -256,6 +258,7 @@ class KiteAIAutomation {
 
     async sendAiQuery(endpoint, message) {
         const agent = createAgent(this.getCurrentProxy());
+        
         const headers = {
             'Accept': 'text/event-stream',
             'Content-Type': 'application/json',
@@ -265,7 +268,8 @@ class KiteAIAutomation {
             message,
             stream: true
         };
-
+        const startTime = performance.now();
+        let ttft = null;
         try {
             const response = await fetch(endpoint, {
                 method: 'POST',
@@ -274,12 +278,13 @@ class KiteAIAutomation {
                 body: JSON.stringify(data)
             });
 
+            
             const sessionPrefix = chalk.blue(`[Session ${this.session.sessionId}]`);
             const walletPrefix = chalk.green(`[${this.session.walletAddress.slice(0, 6)}...]`);
             process.stdout.write(`${sessionPrefix} ${walletPrefix} ${chalk.cyan('🤖 AI Response: ')}`);
             
             let accumulatedResponse = "";
-
+            let isFirstToken = true;
             for await (const chunk of response.body) {
                 const lines = chunk.toString().split('\n');
                 for (const line of lines) {
@@ -290,18 +295,21 @@ class KiteAIAutomation {
 
                             const jsonData = JSON.parse(jsonStr);
                             const content = jsonData.choices?.[0]?.delta?.content || '';
-                            if (content) {
-                                accumulatedResponse += content;
-                                process.stdout.write(chalk.magenta(content));
+                            if (content && isFirstToken) {
+                                ttft = performance.now() - startTime;
+                                isFirstToken = false;   
                             }
+                            accumulatedResponse += content;
+                            process.stdout.write(chalk.magenta(content));
                         } catch (e) {
                             continue;
                         }
                     }
                 }
             }
+            const totalTime = performance.now() - startTime;
             console.log();
-            return accumulatedResponse.trim();
+            return {accumulatedResponse, ttft, totalTime};
         } catch (e) {
             this.logMessage('❌', `AI query error: ${e}`, 'red');
             this.rotateProxy();
@@ -309,7 +317,7 @@ class KiteAIAutomation {
         }
     }
 
-    async reportUsage(endpoint, message, response) {
+    async reportUsage(endpoint, message, response, totalTime, ttft) {
         this.logMessage('📝', 'Recording interaction...', 'white');
         const url = 'https://quests-usage-dev.prod.zettablock.com/api/report_usage';
         const data = {
@@ -317,6 +325,8 @@ class KiteAIAutomation {
             agent_id: AI_ENDPOINTS[endpoint].agent_id,
             request_text: message,
             response_text: response,
+            total_time: totalTime,
+            ttft: ttft,
             request_metadata: {}
         };
 
@@ -364,7 +374,7 @@ class KiteAIAutomation {
                 this.logMessage('⏳', `Next Reset: ${this.session.nextResetTime.toISOString().replace('T', ' ').slice(0, 19)}`, 'cyan');
 
                 const transactions = await this.getRecentTransactions();
-                AI_ENDPOINTS["https://deployment-sofftlsf9z4fya3qchykaanq.stag-vxzy.zettablock.com/main"].questions = 
+                AI_ENDPOINTS["https://deployment-vzbfwrddjthxis3sfplnhx6k.stag-vxzy.zettablock.com/main"].questions = 
                     transactions.map(tx => `Analyze this transaction in detail: ${tx}`);
 
                 const endpoints = Object.keys(AI_ENDPOINTS);
@@ -376,10 +386,10 @@ class KiteAIAutomation {
                 this.logMessage('🔑', `Agent ID: ${AI_ENDPOINTS[endpoint].agent_id}`, 'cyan');
                 this.logMessage('❓', `Query: ${question}`, 'cyan');
 
-                const response = await this.sendAiQuery(endpoint, question);
+                const { response, ttft, totalTime } = await this.sendAiQuery(endpoint, question);
                 let interactionSuccess = false;
 
-                if (await this.reportUsage(endpoint, question, response)) {
+                if (await this.reportUsage(endpoint, question, response,totalTime,ttft)) {
                     this.logMessage('✅', 'Interaction successfully recorded', 'green');
                     this.session.dailyPoints += this.POINTS_PER_INTERACTION;
                     interactionSuccess = true;
